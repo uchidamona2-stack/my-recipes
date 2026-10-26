@@ -1,0 +1,8 @@
+{
+  "name": "レシピ",
+  "short_name": "レシピ",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fffaf3",
+  "theme_color": "#fffaf3"
+}
