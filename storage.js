@@ -6,11 +6,15 @@
 //
 // いまの保存先：localStorage（ブラウザが、このサイト専用に iPhone の中に用意する保存場所）
 //
+// 保存先は createStorage に外から渡す。アプリは本物の localStorage を、
+// テスト（tests.html）は偽物の保存場所を渡す。テストが本物のレシピに触れないようにするため
+// （SPEC 第7節「確かめ方：テストを先に書く」）。
+//
 // 保存しているもの（SPEC 第6節第5段階「データの持ち方」）
 //   レシピ     … { id, title, body, createdAt, ingredients: ["おくら", "なす"] }
 //   食材の一覧 … ["おくら", "なす", …]（名前だけを持つ。番号は付けない）
 
-const Storage = (() => {
+function createStorage(backend) {
   const KEY = "my-recipes:v1";
   const INGREDIENTS_KEY = "my-recipes:ingredients:v1";
 
@@ -22,7 +26,7 @@ const Storage = (() => {
 
   function load(key) {
     try {
-      const text = localStorage.getItem(key);
+      const text = backend.getItem(key);
       return text ? JSON.parse(text) : [];
     } catch (e) {
       return [];
@@ -30,7 +34,7 @@ const Storage = (() => {
   }
 
   function save(key, value) {
-    localStorage.setItem(key, JSON.stringify(value));
+    backend.setItem(key, JSON.stringify(value));
   }
 
   // 保存されたレシピを、画面に渡す形にそろえる。
@@ -102,12 +106,24 @@ const Storage = (() => {
       return load(KEY).map(view).filter((r) => r.ingredients.includes(name)).map((r) => r.title);
     },
 
-    // 一覧から1つ消す。レシピで使っているものは消さない（R9）
-    // 消せたら true、使っていて消さなかったら false
-    removeIngredient(name) {
-      if (this.recipesUsing(name).length) return false;
+    // 一覧から1つ消す（R9）。次の2つは消さない（SPEC 第6節第5段階）
+    //   ・登録画面でいま選んでいる食材（selected に渡す。まだ保存していなくても）
+    //   ・保存したレシピで使っている食材
+    // 消せたら { ok: true }、消さなかったら { ok: false, reason, usedBy } を返す
+    // （reason は画面に出す文、usedBy は使っているレシピの名前）
+    removeIngredient(name, selected = []) {
+      if (selected.includes(name)) {
+        return { ok: false, reason: `「${name}」は選んでいるので消せません。上の「外す」を押してから消してください`, usedBy: [] };
+      }
+      const usedBy = this.recipesUsing(name);
+      if (usedBy.length) {
+        return { ok: false, reason: `「${name}」は「${usedBy.join("」「")}」で使っているので消せません`, usedBy };
+      }
       save(INGREDIENTS_KEY, load(INGREDIENTS_KEY).filter((n) => n !== name));
-      return true;
+      return { ok: true };
     },
   };
-})();
+}
+
+// アプリが使う窓口（本物の保存場所につなぐ）。tests.html ではこの行は使わない
+const Storage = typeof localStorage !== "undefined" ? createStorage(localStorage) : null;

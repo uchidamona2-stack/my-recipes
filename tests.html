@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>レシピ — テストの結果</title>
+  <style>
+    :root { --ok: #1a7f37; --ng: #cf222e; --skip: #9a6700; --line: #d0d7de; --sub: #57606a; --bg: #ffffff; --fg: #1f2328; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ok: #3fb950; --ng: #f85149; --skip: #d29922; --line: #30363d; --sub: #8b949e; --bg: #0d1117; --fg: #e6edf3; }
+    }
+    body { font-family: -apple-system, "Hiragino Sans", sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--fg); line-height: 1.6; }
+    h1 { font-size: 1.3rem; margin: 0 0 4px; }
+    .note { color: var(--sub); font-size: 0.85rem; margin: 0 0 16px; }
+    .summary { font-size: 1.1rem; font-weight: bold; padding: 12px; border-radius: 8px; border: 2px solid; margin-bottom: 20px; }
+    .summary.ok { border-color: var(--ok); color: var(--ok); }
+    .summary.ng { border-color: var(--ng); color: var(--ng); }
+    h2 { font-size: 1rem; margin: 20px 0 6px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    td { border-top: 1px solid var(--line); padding: 6px 4px; vertical-align: top; }
+    td.id { white-space: nowrap; width: 4.5em; color: var(--sub); }
+    td.mark { white-space: nowrap; width: 3.5em; font-weight: bold; }
+    .pass { color: var(--ok); } .fail { color: var(--ng); } .skip { color: var(--skip); }
+    .detail { display: block; color: var(--ng); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>テストの結果</h1>
+  <p class="note">
+    項目の番号と文は TESTS.md（承認済み）と同じです。<br>
+    このページは偽物の保存場所の上だけで動きます。本物のレシピには触りません（T-1 で確かめます）。<br>
+    開き直す（再読み込みする）たびに、全部を流し直します。
+  </p>
+  <div id="summary" class="summary"></div>
+  <div id="results"></div>
+
+  <script src="storage.js"></script>
+  <script src="tests.js"></script>
+  <script>
+    const results = runAllTests(localStorage);
+    const counted = results.filter((r) => r.status !== "skip");
+    const passed = counted.filter((r) => r.status === "pass").length;
+    const allOk = passed === counted.length;
+
+    const summary = document.getElementById("summary");
+    summary.className = "summary " + (allOk ? "ok" : "ng");
+    summary.textContent = `${counted.length} 項目中 ${passed} 項目 合格` + (allOk ? "（全部合格）" : "（不合格あり）");
+
+    const MARK = { pass: "合格", fail: "不合格", skip: "未確認" };
+    const area = document.getElementById("results");
+    let table = null;
+    let group = null;
+    for (const r of results) {
+      if (r.group !== group) {
+        group = r.group;
+        const h = document.createElement("h2");
+        h.textContent = group;
+        table = document.createElement("table");
+        area.append(h, table);
+      }
+      const tr = table.insertRow();
+      const id = tr.insertCell(); id.className = "id"; id.textContent = r.id;
+      const what = tr.insertCell(); what.textContent = r.what;
+      if (r.detail) {
+        const d = document.createElement("span");
+        d.className = "detail";
+        d.textContent = r.detail;
+        what.append(d);
+      }
+      const mark = tr.insertCell(); mark.className = "mark " + r.status; mark.textContent = MARK[r.status];
+    }
+  </script>
+</body>
+</html>

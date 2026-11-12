@@ -82,17 +82,13 @@ function showNew() {
 
       // 消す（R9）：使っていない食材は確認なしで消える。
       // いま選んでいる食材と、レシピで使っている食材は消さない。
+      // 消せるかどうかの決まりは storage.js にある（テストで確かめられるように）
       const remove = el("button", { class: "small", onclick: () => {
-        if (selected.has(name)) {
-          say(`「${name}」は選んでいるので消せません。上の「外す」を押してから消してください`);
+        const result = Storage.removeIngredient(name, [...selected]);
+        if (!result.ok) {
+          say(result.reason);
           return;
         }
-        const users = Storage.recipesUsing(name);
-        if (users.length) {
-          say(`「${name}」は「${users.join("」「")}」で使っているので消せません`);
-          return;
-        }
-        Storage.removeIngredient(name);
         say(`「${name}」を一覧から消しました`);
         render();
       } }, "消す");
