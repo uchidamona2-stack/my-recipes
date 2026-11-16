@@ -10,11 +10,16 @@
 // テスト（tests.html）は偽物の保存場所を渡す。テストが本物のレシピに触れないようにするため
 // （SPEC 第7節「確かめ方：テストを先に書く」）。
 //
-// 保存しているもの（SPEC 第6節第5段階「データの持ち方」）
-//   レシピ     … { id, title, body, createdAt, ingredients: ["おくら", "なす"] }
+// 時刻も外から渡せる（省略すると本物の時計）。テストでは1ずつ進む偽物の時計を渡し、
+// 「どちらが後に保存されたか」が同じ1000分の1秒に重なって決まらない、ということを防ぐ。
+//
+// 保存しているもの（SPEC 第6節第5段階「データの持ち方」・第6段階）
+//   レシピ     … { id, title, body, createdAt, updatedAt, ingredients: ["おくら", "なす"] }
+//                 title は空でもよい（画面では「（名前なし）」と出す）。
+//                 updatedAt は直して保存したときだけ付く（直したことのないレシピにはない）
 //   食材の一覧 … ["おくら", "なす", …]（名前だけを持つ。番号は付けない）
 
-function createStorage(backend) {
+function createStorage(backend, now = () => Date.now()) {
   const KEY = "my-recipes:v1";
   const INGREDIENTS_KEY = "my-recipes:ingredients:v1";
 
@@ -45,15 +50,41 @@ function createStorage(backend) {
   }
 
   function newId() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    return now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
+
+  // 一覧に並べるときの時刻：最後に直した時刻。直したことがなければ登録した時刻
+  // （古いレシピは読むときにそうみなすだけで、データには書き足さない。SPEC 第6節第6段階）
+  function touchedAt(recipe) {
+    return recipe.updatedAt || recipe.createdAt;
+  }
+
+  // 保存する前に、打った中身をそろえて確かめる（SPEC 第6節第6段階「名前が空のレシピ」）
+  //   ・名前は前後の空白を取る。空白だけなら空として保存する
+  //   ・名前・材料と手順・食材が全部空なら保存しない（空白や改行だけの欄も空とみなす）
+  // 保存してよければ { ok: true, fields }、だめなら { ok: false, reason } を返す
+  function prepare({ title = "", body = "", ingredients = [] }) {
+    const fields = { title: title.trim(), body, ingredients: [...ingredients] };
+    if (!fields.title && !body.trim() && fields.ingredients.length === 0) {
+      return { ok: false, reason: EMPTY_REASON };
+    }
+    return { ok: true, fields };
+  }
+
+  const EMPTY_REASON = "何も入っていないので、保存していません";
+  const NOT_FOUND_REASON = "レシピが見つかりません";
 
   return {
     // ---- レシピ ----
 
-    // 登録したレシピをすべて返す（新しい順）
+    // 登録したレシピをすべて返す。最後に登録したか直したものが先（SPEC 第6節第6段階）
     listRecipes() {
-      return load(KEY).map(view).sort((a, b) => b.createdAt - a.createdAt);
+      return load(KEY).map(view).sort((a, b) => touchedAt(b) - touchedAt(a));
+    },
+
+    // 画面に出す名前。名前が空なら「（名前なし）」（データには入れない。SPEC 第6節第6段階）
+    titleOf(recipe) {
+      return recipe.title || "（名前なし）";
     },
 
     // id で1件を返す。見つからなければ null
@@ -62,13 +93,38 @@ function createStorage(backend) {
       return r ? view(r) : null;
     },
 
-    // 1件を登録し、つけた id を返す
-    addRecipe({ title, body, ingredients }) {
+    // 1件を登録する（R1）。登録できたら { ok: true, id }、
+    // できなければ { ok: false, reason } を返す（reason は画面に出す文）
+    addRecipe(input) {
+      const checked = prepare(input);
+      if (!checked.ok) return checked;
       const recipes = load(KEY);
-      const recipe = { id: newId(), title, body, createdAt: Date.now(), ingredients };
+      const recipe = { id: newId(), ...checked.fields, createdAt: now() };
       recipes.push(recipe);
       save(KEY, recipes);
-      return recipe.id;
+      return { ok: true, id: recipe.id };
+    },
+
+    // 1件を直して保存する（R10）。id・登録した時刻はそのまま、最後に直した時刻を付ける。
+    // 保存できたら { ok: true }、できなければ { ok: false, reason }（保存されたレシピは元のまま）
+    updateRecipe(id, input) {
+      const recipes = load(KEY);
+      const i = recipes.findIndex((r) => r.id === id);
+      if (i === -1) return { ok: false, reason: NOT_FOUND_REASON };
+      const checked = prepare(input);
+      if (!checked.ok) return checked;
+      recipes[i] = { ...recipes[i], ...checked.fields, updatedAt: now() };
+      save(KEY, recipes);
+      return { ok: true };
+    },
+
+    // 1件を消す（R11）。消したら戻せない。付けていた食材は一覧に残す（SPEC 第6節第6段階）。
+    // 消す前の確認は画面（app.js）の役目
+    deleteRecipe(id) {
+      const recipes = load(KEY);
+      if (!recipes.some((r) => r.id === id)) return { ok: false, reason: NOT_FOUND_REASON };
+      save(KEY, recipes.filter((r) => r.id !== id));
+      return { ok: true };
     },
 
     // ---- 食材の一覧（R8・R9）----
@@ -103,7 +159,7 @@ function createStorage(backend) {
 
     // この食材を使っているレシピの名前を返す（使っていなければ空）
     recipesUsing(name) {
-      return load(KEY).map(view).filter((r) => r.ingredients.includes(name)).map((r) => r.title);
+      return load(KEY).map(view).filter((r) => r.ingredients.includes(name)).map((r) => this.titleOf(r));
     },
 
     // 一覧から1つ消す（R9）。次の2つは消さない（SPEC 第6節第5段階）

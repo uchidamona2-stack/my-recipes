@@ -35,10 +35,13 @@ function same(actual, expected, label) {
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`${label}：期待 ${e} ／ 実際 ${a}`);
 }
-// まっさらな偽物の保存場所と、それにつないだ窓口を作る
+// まっさらな偽物の保存場所と、それにつないだ窓口を作る。
+// 時計も偽物にする（保存するたびに1ずつ進む）。本物の時計だと、テストは速すぎて
+// 2件の保存が同じ1000分の1秒に重なり、どちらが後か決まらないことがあるため
 function fresh() {
   const backend = createFakeBackend();
-  return { backend, s: createStorage(backend) };
+  let t = 1000;
+  return { backend, s: createStorage(backend, () => ++t) };
 }
 
 // ---------- 足す（R8） ----------
@@ -198,7 +201,7 @@ const RECIPE = "レシピに付ける（R2）とデータの持ち方";
 
 item("R2-1", RECIPE, "食材を付けてレシピを登録でき、読むと同じ食材が返る", () => {
   const { s } = fresh();
-  const id = s.addRecipe({ title: "なすの炒め物", body: "", ingredients: ["なす", "ぶたこま"] });
+  const { id } = s.addRecipe({ title: "なすの炒め物", body: "", ingredients: ["なす", "ぶたこま"] });
   same(s.getRecipe(id).ingredients, ["なす", "ぶたこま"], "読んだときの食材");
 });
 
@@ -211,7 +214,7 @@ item("R2-2", RECIPE, "レシピには食材を名前で覚える", () => {
 
 item("R2-3", RECIPE, "食材を1つも付けずに登録できる", () => {
   const { s } = fresh();
-  const id = s.addRecipe({ title: "白ごはん", body: "", ingredients: [] });
+  const { id } = s.addRecipe({ title: "白ごはん", body: "", ingredients: [] });
   const r = s.getRecipe(id);
   expect(r !== null, "登録したレシピが読めない");
   same(r.ingredients, [], "読んだときの食材（食材なし）");
@@ -245,6 +248,237 @@ item("D-3", RECIPE, "新しいレシピを登録しても、古いレシピに�
   const old = saved.find((r) => r.id === "old1");
   same(old, OLD_RECIPE, "登録の後の古いレシピ");
   same(saved.length, 2, "保存されたレシピの数");
+});
+
+// ---------- 名前が空のレシピ（R1・R10） ----------
+const NONAME = "名前が空のレシピ（R1・R10）";
+const raw = (backend) => JSON.parse(backend.getItem(RECIPES_KEY) || "[]");
+
+item("N-1", NONAME, "名前が空でも、材料と手順か食材のどちらかがあれば登録できる", () => {
+  const { s } = fresh();
+  same(s.addRecipe({ title: "", body: "なすを切る", ingredients: [] }).ok, true, "名前なし・本文ありの登録");
+  same(s.addRecipe({ title: "", body: "", ingredients: ["なす"] }).ok, true, "名前なし・食材ありの登録");
+  same(s.listRecipes().length, 2, "レシピの数");
+});
+
+item("N-2", NONAME, "名前が空のレシピは、データには名前を空のまま入れる", () => {
+  const { backend, s } = fresh();
+  s.addRecipe({ title: "", body: "なすを切る", ingredients: [] });
+  same(raw(backend)[0].title, "", "保存されたデータの名前");
+});
+
+item("N-3", NONAME, "名前が空のレシピは、画面に出す名前が「（名前なし）」になる", () => {
+  const { s } = fresh();
+  const a = s.addRecipe({ title: "", body: "なすを切る", ingredients: [] }).id;
+  const b = s.addRecipe({ title: "麻婆なす", body: "", ingredients: [] }).id;
+  same(s.titleOf(s.getRecipe(a)), "（名前なし）", "名前が空のレシピ");
+  same(s.titleOf(s.getRecipe(b)), "麻婆なす", "名前のあるレシピ");
+});
+
+item("N-4", NONAME, "空白だけの名前は、空として保存する", () => {
+  const { backend, s } = fresh();
+  s.addRecipe({ title: "　", body: "なすを切る", ingredients: [] });
+  same(raw(backend)[0].title, "", "保存されたデータの名前");
+});
+
+item("N-5", NONAME, "名前・材料と手順・食材が全部空なら、登録しない", () => {
+  const { s } = fresh();
+  same(s.addRecipe({ title: "", body: "", ingredients: [] }).ok, false, "全部空の登録");
+  same(s.listRecipes().length, 0, "レシピの数");
+});
+
+item("N-6", NONAME, "空白や改行だけの欄も、全部空の判定では空とみなす", () => {
+  const { s } = fresh();
+  same(s.addRecipe({ title: " ", body: "\n\n　\n", ingredients: [] }).ok, false, "空白と改行だけの登録");
+  same(s.listRecipes().length, 0, "レシピの数");
+});
+
+item("N-7", NONAME, "全部空で登録しなかったときは、理由の文を返す", () => {
+  const { s } = fresh();
+  same(s.addRecipe({ title: "", body: "", ingredients: [] }).reason, "何も入っていないので、保存していません", "理由の文");
+});
+
+// ---------- 直す（R10） ----------
+const EDIT = "直す（R10）";
+
+// 3件を古い順に登録しておく
+function threeRecipes() {
+  const f = fresh();
+  f.s.addIngredient("なす");
+  f.s.addIngredient("ぶたこま");
+  f.ids = [
+    f.s.addRecipe({ title: "まーぼなす", body: "なすを切る", ingredients: ["なす"] }).id,
+    f.s.addRecipe({ title: "白ごはん", body: "米を炊く", ingredients: [] }).id,
+    f.s.addRecipe({ title: "みそ汁", body: "だしをとる", ingredients: [] }).id,
+  ];
+  return f;
+}
+const order = (s) => s.listRecipes().map((r) => r.title);
+
+item("R10-1", EDIT, "名前を直して保存すると、読むと直した名前が返る", () => {
+  const { s, ids } = threeRecipes();
+  same(s.updateRecipe(ids[0], { title: "麻婆なす", body: "なすを切る", ingredients: ["なす"] }).ok, true, "直した結果");
+  same(s.getRecipe(ids[0]).title, "麻婆なす", "読んだ名前");
+});
+
+item("R10-2", EDIT, "材料と手順を直して保存すると、読むと直した本文が返る", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "まーぼなす", body: "なすを乱切りにする", ingredients: ["なす"] });
+  same(s.getRecipe(ids[0]).body, "なすを乱切りにする", "読んだ本文");
+});
+
+item("R10-3", EDIT, "食材を付け替えて保存すると、読むと付け替えた食材が返る", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "まーぼなす", body: "なすを切る", ingredients: ["なす", "ぶたこま"] });
+  same(s.getRecipe(ids[0]).ingredients, ["なす", "ぶたこま"], "読んだ食材");
+});
+
+item("R10-4", EDIT, "直しても、レシピの件数は増えない（別のレシピとして足されない）", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "麻婆なす", body: "なすを切る", ingredients: ["なす"] });
+  same(s.listRecipes().length, 3, "レシピの数");
+});
+
+item("R10-5", EDIT, "直したレシピ以外は変わらない", () => {
+  const { backend, s, ids } = threeRecipes();
+  const others = () => JSON.stringify(raw(backend).filter((r) => r.id !== ids[0]));
+  const before = others();
+  s.updateRecipe(ids[0], { title: "麻婆なす", body: "なすを切る", ingredients: ["なす"] });
+  same(others(), before, "ほかの2件のデータ");
+});
+
+item("R10-6", EDIT, "直して保存したレシピは、一覧の一番上に動く", () => {
+  const { s, ids } = threeRecipes();
+  same(order(s), ["みそ汁", "白ごはん", "まーぼなす"], "直す前の並び");
+  s.updateRecipe(ids[0], { title: "麻婆なす", body: "なすを切る", ingredients: ["なす"] });
+  same(order(s), ["麻婆なす", "みそ汁", "白ごはん"], "直した後の並び");
+});
+
+item("R10-6a", EDIT, "新しく登録したレシピも一番上に来る（直したレシピより後なら、その上）", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "麻婆なす", body: "なすを切る", ingredients: ["なす"] });
+  s.addRecipe({ title: "やきそば", body: "", ingredients: [] });
+  same(order(s), ["やきそば", "麻婆なす", "みそ汁", "白ごはん"], "並び");
+});
+
+item("R10-6b", EDIT, "直したことのない古いレシピは、登録した日時の順に並び、データは書き換わらない", () => {
+  const { backend, s } = fresh();
+  const OLD_A = { id: "a", title: "古いA", body: "", createdAt: 1 };
+  const OLD_B = { id: "b", title: "古いB", body: "", createdAt: 2 };
+  backend.setItem(RECIPES_KEY, JSON.stringify([OLD_A, OLD_B]));
+  const before = backend.getItem(RECIPES_KEY);
+  same(order(s), ["古いB", "古いA"], "並び");
+  same(backend.getItem(RECIPES_KEY), before, "並べる前と後の保存されたデータ");
+});
+
+item("R10-6c", EDIT, "保存しなかったとき（全部空など）は、並び順も変わらない", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "", body: "", ingredients: [] });
+  same(order(s), ["みそ汁", "白ごはん", "まーぼなす"], "並び");
+});
+
+item("R10-7", EDIT, "直して名前を空にしても、ほかの欄があれば保存でき、「（名前なし）」になる", () => {
+  const { s, ids } = threeRecipes();
+  same(s.updateRecipe(ids[0], { title: "", body: "なすを切る", ingredients: ["なす"] }).ok, true, "直した結果");
+  same(s.titleOf(s.getRecipe(ids[0])), "（名前なし）", "画面に出す名前");
+});
+
+item("R10-8", EDIT, "直して全部空にしたら保存せず、保存されたレシピは元のまま", () => {
+  const { backend, s, ids } = threeRecipes();
+  const before = backend.getItem(RECIPES_KEY);
+  const r = s.updateRecipe(ids[0], { title: " ", body: "\n", ingredients: [] });
+  same(r.ok, false, "直した結果");
+  same(r.reason, "何も入っていないので、保存していません", "理由の文");
+  same(backend.getItem(RECIPES_KEY), before, "保存されたデータ");
+});
+
+item("R10-9", EDIT, "食材を外して保存すると、外した食材は一覧に残る", () => {
+  const { s, ids } = threeRecipes();
+  s.updateRecipe(ids[0], { title: "まーぼなす", body: "なすを切る", ingredients: [] });
+  expect(s.listIngredients().includes("なす"), "一覧から「なす」がなくなった");
+});
+
+item("R10-10", EDIT, "外した食材は、ほかで使っていなければ消せるようになる", () => {
+  const { s, ids } = threeRecipes();
+  same(s.removeIngredient("なす").ok, false, "外す前に「なす」を消した結果");
+  s.updateRecipe(ids[0], { title: "まーぼなす", body: "なすを切る", ingredients: [] });
+  same(s.removeIngredient("なす").ok, true, "外した後に「なす」を消した結果");
+});
+
+item("R10-11", EDIT, "食材の欄がない古いレシピに、食材を付けて保存できる", () => {
+  const { backend, s } = fresh();
+  backend.setItem(RECIPES_KEY, JSON.stringify([OLD_RECIPE]));
+  s.addIngredient("なす");
+  same(s.updateRecipe("old1", { title: "古いレシピ", body: "本文", ingredients: ["なす"] }).ok, true, "直した結果");
+  same(s.getRecipe("old1").ingredients, ["なす"], "読んだ食材");
+});
+
+item("R10-12", EDIT, "古いレシピを直しても、ほかの古いレシピは書き換わらない", () => {
+  const { backend, s } = fresh();
+  const OLD_2 = { id: "old2", title: "古いレシピ2", body: "本文2", createdAt: 2 };
+  backend.setItem(RECIPES_KEY, JSON.stringify([OLD_RECIPE, OLD_2]));
+  s.updateRecipe("old1", { title: "古いレシピ", body: "本文", ingredients: ["なす"] });
+  same(raw(backend).find((r) => r.id === "old2"), OLD_2, "もう1件の古いレシピ");
+});
+
+item("R10-13", EDIT, "ないレシピを直そうとしたら、何も変わらず、理由の文を返す", () => {
+  const { backend, s } = threeRecipes();
+  const before = backend.getItem(RECIPES_KEY);
+  const r = s.updateRecipe("nai", { title: "麻婆なす", body: "", ingredients: [] });
+  same(r.ok, false, "直した結果");
+  same(r.reason, "レシピが見つかりません", "理由の文");
+  same(backend.getItem(RECIPES_KEY), before, "保存されたデータ");
+});
+
+// ---------- 消す（R11） ----------
+const DELETE = "消す（R11）";
+
+item("R11-1", DELETE, "消したレシピは、読もうとしても見つからない", () => {
+  const { s, ids } = threeRecipes();
+  same(s.deleteRecipe(ids[0]).ok, true, "消した結果");
+  same(s.getRecipe(ids[0]), null, "消したあと読んだ結果");
+});
+
+item("R11-2", DELETE, "消したレシピは、一覧に出ない", () => {
+  const { s, ids } = threeRecipes();
+  s.deleteRecipe(ids[0]);
+  same(order(s), ["みそ汁", "白ごはん"], "一覧");
+});
+
+item("R11-3", DELETE, "消したレシピ以外は変わらない", () => {
+  const { backend, s, ids } = threeRecipes();
+  const others = () => JSON.stringify(raw(backend).filter((r) => r.id !== ids[0]));
+  const before = others();
+  s.deleteRecipe(ids[0]);
+  same(others(), before, "残りの2件のデータ");
+});
+
+item("R11-4", DELETE, "消したレシピで使っていた食材は、一覧に残る", () => {
+  const { s, ids } = threeRecipes();
+  s.deleteRecipe(ids[0]);
+  expect(s.listIngredients().includes("なす"), "一覧から「なす」がなくなった");
+});
+
+item("R11-5", DELETE, "消したレシピだけで使っていた食材は、消せるようになる", () => {
+  const { s, ids } = threeRecipes();
+  s.deleteRecipe(ids[0]);
+  same(s.removeIngredient("なす").ok, true, "「なす」を消した結果");
+});
+
+item("R11-6", DELETE, "ほかのレシピでも使っている食材は、消したあとも消せない", () => {
+  const { s, ids } = threeRecipes();
+  s.addRecipe({ title: "なすの漬物", body: "", ingredients: ["なす"] });
+  s.deleteRecipe(ids[0]);
+  const r = s.removeIngredient("なす");
+  same(r.ok, false, "「なす」を消した結果");
+  same(r.usedBy, ["なすの漬物"], "使っているレシピ");
+});
+
+item("R11-7", DELETE, "ないレシピを消そうとしても、ほかは何も変わらない", () => {
+  const { backend, s } = threeRecipes();
+  const before = backend.getItem(RECIPES_KEY);
+  same(s.deleteRecipe("nai").ok, false, "消した結果");
+  same(backend.getItem(RECIPES_KEY), before, "保存されたデータ");
 });
 
 // ---------- 全部を流す ----------

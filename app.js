@@ -1,9 +1,10 @@
 // 画面と処理
 //
-// 画面は3つ。URL の # 以降で切り替える。
+// 画面は4つ。URL の # 以降で切り替える。
 //   #/            一覧
 //   #/new         登録
-//   #/recipe/<id> 1件を読む
+//   #/recipe/<id> 1件を読む（ここから「直す」「消す」）
+//   #/edit/<id>   直す（登録と同じ画面に、いまの中身を入れて開く。SPEC 第6節第6段階）
 // データには Storage（storage.js）を通してしか触らない。
 
 const main = document.getElementById("main");
@@ -25,7 +26,8 @@ function showList() {
   const recipes = Storage.listRecipes();
   const list = el("ul", { class: "list" });
   for (const r of recipes) {
-    list.append(el("li", {}, el("a", { href: `#/recipe/${r.id}` }, r.title)));
+    // 名前が空なら「（名前なし）」と出す（SPEC 第6節第6段階）
+    list.append(el("li", {}, el("a", { href: `#/recipe/${r.id}` }, Storage.titleOf(r))));
   }
   main.replaceChildren(
     el("a", { href: "#/new", class: "button" }, "＋ レシピを登録"),
@@ -33,16 +35,22 @@ function showList() {
   );
 }
 
-function showNew() {
-  const title = el("input", { type: "text", id: "title", placeholder: "レシピの名前" });
+// 登録（recipe なし）と直す（recipe あり）は同じ画面を使う。
+// 直すときは、保存を押すまで保存されたレシピは元のまま（SPEC 第6節第6段階）
+function showEditor(recipe = null) {
+  const title = el("input", { type: "text", id: "title", placeholder: "レシピの名前（あとで入れてもよい）" });
   const body = el("textarea", { id: "body", rows: "12", placeholder: "材料と手順を貼り付け" });
+  if (recipe) {
+    title.value = recipe.title;
+    body.value = recipe.body;
+  }
 
   // ---- 食材（R2・R8・R9。SPEC 第6節第5段階「画面の使い方」）----
   // 上から順に：選んだ食材（「外す」付き）→ 打つ欄 → 候補（「消す」付き）。
   // 候補は、打った文字で始まる食材だけを出す。何も打っていなければ出さない。
   // 別の画面には移らないので、書きかけの名前や本文はそのまま残る。
 
-  const selected = new Set(); // このレシピに付ける食材（まだ保存していない）
+  const selected = new Set(recipe ? recipe.ingredients : []); // このレシピに付ける食材（まだ保存していない）
   const chosenArea = el("div", { class: "chosen" });
   const query = el("input", { type: "text", id: "ingredient", placeholder: "食材をひらがなで（例：な）" });
   const candidates = el("ul", { class: "candidates" });
@@ -135,28 +143,29 @@ function showNew() {
 
   render();
 
+  // 名前が空でも保存する。全部空なら保存せず、理由の文を出す（決まりは storage.js）
+  const saveMessage = el("p", { class: "message" });
   const save = el("button", {
     onclick: () => {
-      if (!title.value.trim()) {
-        title.focus();
+      const input = { title: title.value, body: body.value, ingredients: [...selected] };
+      const result = recipe ? Storage.updateRecipe(recipe.id, input) : Storage.addRecipe(input);
+      if (!result.ok) {
+        saveMessage.textContent = result.reason;
         return;
       }
-      const id = Storage.addRecipe({
-        title: title.value.trim(),
-        body: body.value,
-        ingredients: [...selected],
-      });
-      location.hash = `#/recipe/${id}`;
+      location.hash = `#/recipe/${recipe ? recipe.id : result.id}`;
     },
-  }, "登録する");
+  }, recipe ? "保存する" : "登録する");
   main.replaceChildren(
-    el("a", { href: "#/" }, "← 一覧へ"),
+    // 直すときの「もどる」は保存せずに読む画面へ戻る
+    recipe ? el("a", { href: `#/recipe/${recipe.id}` }, "← もどる（保存しない）") : el("a", { href: "#/" }, "← 一覧へ"),
     el("label", { for: "title" }, "名前"), title,
     el("label", { for: "ingredient" }, "食材"), chosenArea,
     query, candidates,
     message,
     el("label", { for: "body" }, "材料と手順"), body,
-    save
+    save,
+    saveMessage
   );
 }
 
@@ -166,20 +175,36 @@ function showRecipe(id) {
     main.replaceChildren(el("p", {}, "レシピが見つかりません"), el("a", { href: "#/" }, "← 一覧へ"));
     return;
   }
+  // 消す（R11）：確認を1回はさむ。iPhone に最初から備わった確認の枠（confirm）を使う。
+  // 消したら戻せない。押し間違えないよう、「直す」は上、「消す」は一番下に離して置く
+  const remove = el("button", { class: "danger", onclick: () => {
+    if (!confirm(`「${Storage.titleOf(r)}」を消しますか？\n消したレシピは戻せません。`)) return;
+    Storage.deleteRecipe(r.id);
+    location.hash = "#/";
+  } }, "このレシピを消す");
   main.replaceChildren(
-    el("a", { href: "#/" }, "← 一覧へ"),
-    el("h2", {}, r.title),
+    el("div", { class: "toolbar" },
+      el("a", { href: "#/" }, "← 一覧へ"),
+      el("a", { href: `#/edit/${r.id}`, class: "button small-button" }, "直す")),
+    el("h2", {}, Storage.titleOf(r)),
     // 付けた食材（古いレシピは「食材なし」として扱う）
     r.ingredients.length
       ? el("p", { class: "tags" }, r.ingredients.join("・"))
       : el("p", { class: "empty" }, "食材なし"),
-    el("div", { class: "body" }, r.body)
+    el("div", { class: "body" }, r.body),
+    el("hr", { class: "separator" }),
+    remove
   );
 }
 
 function route() {
   const hash = location.hash || "#/";
-  if (hash === "#/new") showNew();
+  if (hash === "#/new") showEditor();
+  else if (hash.startsWith("#/edit/")) {
+    const r = Storage.getRecipe(hash.slice("#/edit/".length));
+    if (r) showEditor(r);
+    else main.replaceChildren(el("p", {}, "レシピが見つかりません"), el("a", { href: "#/" }, "← 一覧へ"));
+  }
   else if (hash.startsWith("#/recipe/")) showRecipe(hash.slice("#/recipe/".length));
   else showList();
   window.scrollTo(0, 0);
