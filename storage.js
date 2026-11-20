@@ -14,8 +14,10 @@
 // 「どちらが後に保存されたか」が同じ1000分の1秒に重なって決まらない、ということを防ぐ。
 //
 // 保存しているもの（SPEC 第6節第5段階「データの持ち方」・第6段階）
-//   レシピ     … { id, title, body, createdAt, updatedAt, ingredients: ["おくら", "なす"] }
+//   レシピ     … { id, title, yomi, body, createdAt, updatedAt, ingredients: ["おくら", "なす"] }
 //                 title は空でもよい（画面では「（名前なし）」と出す）。
+//                 yomi は料理名のよみ（ひらがなと「ー」だけ。空でもよい）。絞り込んだ一覧を
+//                 あいうえお順に並べるときにだけ使う（SPEC 第6節第7段階「料理名のよみ」）。
 //                 updatedAt は直して保存したときだけ付く（直したことのないレシピにはない）
 //   食材の一覧 … ["おくら", "なす", …]（名前だけを持つ。番号は付けない）
 
@@ -44,9 +46,10 @@ function createStorage(backend, now = () => Date.now()) {
 
   // 保存されたレシピを、画面に渡す形にそろえる。
   // 最初の1本で登録したレシピには食材の欄がないので、「食材なし」とみなす。
+  // よみの欄がない、前から登録してあるレシピは、よみが空とみなす（SPEC 第6節第7段階）。
   // 保存されたデータそのものは書き換えない（SPEC 第6節第5段階）。
   function view(recipe) {
-    return { ...recipe, ingredients: recipe.ingredients || [] };
+    return { ...recipe, ingredients: recipe.ingredients || [], yomi: recipe.yomi || "" };
   }
 
   function newId() {
@@ -59,19 +62,36 @@ function createStorage(backend, now = () => Date.now()) {
     return recipe.updatedAt || recipe.createdAt;
   }
 
-  // 保存する前に、打った中身をそろえて確かめる（SPEC 第6節第6段階「名前が空のレシピ」）
-  //   ・名前は前後の空白を取る。空白だけなら空として保存する
-  //   ・名前・材料と手順・食材が全部空なら保存しない（空白や改行だけの欄も空とみなす）
+  // 保存する前に、打った中身をそろえて確かめる（SPEC 第6節第6段階「名前が空のレシピ」・第7段階「料理名のよみ」）
+  //   ・名前とよみは前後の空白を取る。空白だけなら空として保存する
+  //   ・よみに、ひらがなと「ー」以外が入っていたら保存しない
+  //   ・名前・よみ・材料と手順・食材が全部空なら保存しない（空白や改行だけの欄も空とみなす）
   // 保存してよければ { ok: true, fields }、だめなら { ok: false, reason } を返す
-  function prepare({ title = "", body = "", ingredients = [] }) {
-    const fields = { title: title.trim(), body, ingredients: [...ingredients] };
-    if (!fields.title && !body.trim() && fields.ingredients.length === 0) {
+  function prepare({ title = "", yomi = "", body = "", ingredients = [] }) {
+    const fields = { title: title.trim(), yomi: yomi.trim(), body, ingredients: [...ingredients] };
+    if (fields.yomi && !NAME_PATTERN.test(fields.yomi)) {
+      return { ok: false, reason: YOMI_REASON };
+    }
+    if (!fields.title && !fields.yomi && !body.trim() && fields.ingredients.length === 0) {
       return { ok: false, reason: EMPTY_REASON };
     }
     return { ok: true, fields };
   }
 
+  // 絞り込んだ一覧の並べ方（SPEC 第6節第7段階）：よみのあいうえお順。
+  // よみが空なら名前そのもので並べ、名前もよみもないレシピは最後に置く
+  function sortKey(recipe) {
+    return recipe.yomi || recipe.title;
+  }
+  function byYomi(a, b) {
+    const ka = sortKey(a);
+    const kb = sortKey(b);
+    if (!ka || !kb) return (ka ? 0 : 1) - (kb ? 0 : 1);
+    return collator.compare(ka, kb);
+  }
+
   const EMPTY_REASON = "何も入っていないので、保存していません";
+  const YOMI_REASON = "よみは、ひらがなと「ー」だけで入れてください";
   const NOT_FOUND_REASON = "レシピが見つかりません";
 
   return {
@@ -80,6 +100,21 @@ function createStorage(backend, now = () => Date.now()) {
     // 登録したレシピをすべて返す。最後に登録したか直したものが先（SPEC 第6節第6段階）
     listRecipes() {
       return load(KEY).map(view).sort((a, b) => touchedAt(b) - touchedAt(a));
+    },
+
+    // 食材で絞り込む（R3。SPEC 第6節第7段階「絞り込みの決まり」）。
+    // fields は欄1・欄2の中身：[["とうふ", "きぬどうふ"], ["ぶたこま"]]
+    //   ・同じ欄の中は「どれか」（OR）、欄どうしは「両方」（AND）
+    //   ・空の欄はないものとする。両方空なら絞り込まず、ふだんの一覧（最後に登録したか直した順）を返す
+    //   ・「合う」のは名前が同じときだけ（「とうふ」で「きぬどうふ」は合わない）
+    //   ・絞り込んだ一覧は、よみのあいうえお順
+    // 読むだけで、保存されたデータは書き換えない
+    filterRecipes(fields) {
+      const used = fields.filter((names) => names.length > 0);
+      if (used.length === 0) return this.listRecipes();
+      return load(KEY).map(view)
+        .filter((r) => used.every((names) => names.some((n) => r.ingredients.includes(n))))
+        .sort(byYomi);
     },
 
     // 画面に出す名前。名前が空なら「（名前なし）」（データには入れない。SPEC 第6節第6段階）

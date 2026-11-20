@@ -481,6 +481,205 @@ item("R11-7", DELETE, "ないレシピを消そうとしても、ほかは何も
   same(backend.getItem(RECIPES_KEY), before, "保存されたデータ");
 });
 
+// ---------- 絞り込みの決まり（R3） ----------
+const FILTER = "絞り込みの決まり（R3）";
+
+// TESTS.md の例の5件。上から「最後に登録した順」になるように、古いものから入れる
+//   麻婆豆腐（まーぼーどうふ）きぬどうふ・ぶたこま
+//   豚汁（とんじる）          ぶたこま・だいこん
+//   冷奴（ひややっこ）        とうふ
+//   肉豆腐（にくどうふ）      とうふ・ぶたこま
+//   古いレシピ（よみの欄も食材の欄もない。最初の1本で登録したもの）
+function fiveRecipes() {
+  const f = fresh();
+  f.backend.setItem(RECIPES_KEY, JSON.stringify([OLD_RECIPE]));
+  ["とうふ", "きぬどうふ", "ぶたこま", "だいこん"].forEach((n) => f.s.addIngredient(n));
+  f.ids = {
+    肉豆腐: f.s.addRecipe({ title: "肉豆腐", yomi: "にくどうふ", body: "", ingredients: ["とうふ", "ぶたこま"] }).id,
+    冷奴: f.s.addRecipe({ title: "冷奴", yomi: "ひややっこ", body: "", ingredients: ["とうふ"] }).id,
+    豚汁: f.s.addRecipe({ title: "豚汁", yomi: "とんじる", body: "", ingredients: ["ぶたこま", "だいこん"] }).id,
+    麻婆豆腐: f.s.addRecipe({ title: "麻婆豆腐", yomi: "まーぼーどうふ", body: "", ingredients: ["きぬどうふ", "ぶたこま"] }).id,
+  };
+  return f;
+}
+// 絞り込んだ結果を、画面に出す名前の並びにする。欄1・欄2の順に渡す
+const found = (s, field1, field2 = []) => s.filterRecipes([field1, field2]).map((r) => s.titleOf(r));
+
+item("R3-1", FILTER, "欄1に食材を1つ入れると、その食材を付けたレシピだけが出る", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["とうふ"]), ["肉豆腐", "冷奴"], "欄1「とうふ」");
+});
+
+item("R3-2", FILTER, "同じ欄に複数入れると、どれかを付けたレシピが出る（OR）", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["とうふ", "きぬどうふ"]), ["肉豆腐", "冷奴", "麻婆豆腐"], "欄1「とうふ・きぬどうふ」");
+});
+
+item("R3-3", FILTER, "欄1と欄2に入れると、両方の条件に合うレシピだけが出る（AND）", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["とうふ"], ["ぶたこま"]), ["肉豆腐"], "欄1「とうふ」、欄2「ぶたこま」");
+});
+
+item("R3-4", FILTER, "OR と AND を組み合わせられる", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["とうふ", "きぬどうふ"], ["ぶたこま"]), ["肉豆腐", "麻婆豆腐"], "欄1「とうふ・きぬどうふ」、欄2「ぶたこま」");
+});
+
+item("R3-5", FILTER, "欄2だけに入れても絞り込める", () => {
+  const { s } = fiveRecipes();
+  same(found(s, [], ["だいこん"]), ["豚汁"], "欄2「だいこん」");
+});
+
+item("R3-6", FILTER, "両方の欄が空なら、全部のレシピが、ふだんの一覧の順（最後に登録したか直した順）で出る", () => {
+  const { s } = fiveRecipes();
+  same(found(s, [], []), ["麻婆豆腐", "豚汁", "冷奴", "肉豆腐", "古いレシピ"], "両方空");
+});
+
+item("R3-7", FILTER, "「合う」のは名前が同じときだけ", () => {
+  const { s } = fiveRecipes();
+  expect(!found(s, ["とうふ"]).includes("麻婆豆腐"), "欄1「とうふ」で、きぬどうふの麻婆豆腐が出た");
+});
+
+item("R3-8", FILTER, "当てはまるレシピがなければ、何も出ない", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["だいこん"], ["とうふ"]), [], "欄1「だいこん」、欄2「とうふ」");
+});
+
+item("R3-9", FILTER, "絞り込んだ一覧は、よみのあいうえお順に並ぶ", () => {
+  const { s } = fiveRecipes();
+  same(found(s, ["とうふ", "きぬどうふ"]), ["肉豆腐", "冷奴", "麻婆豆腐"], "R3-2 の結果の順");
+  same(found(s, ["とうふ", "きぬどうふ", "ぶたこま"]), ["豚汁", "肉豆腐", "冷奴", "麻婆豆腐"],
+    "4件の順（とんじる → にくどうふ → ひややっこ → まーぼーどうふ）");
+});
+
+item("R3-9a", FILTER, "よみが空のレシピは、名前そのもので並ぶ", () => {
+  const { s } = fiveRecipes();
+  s.addRecipe({ title: "カレー", body: "", ingredients: ["だいこん"] });
+  same(found(s, ["だいこん"]), ["カレー", "豚汁"], "欄1「だいこん」（よみなしのカレーと、よみ「とんじる」の豚汁）");
+});
+
+item("R3-9b", FILTER, "名前もよみもないレシピは、絞り込んだ一覧の最後に来る", () => {
+  const { s } = fiveRecipes();
+  s.addRecipe({ title: "", body: "とうふを切る", ingredients: ["とうふ"] });
+  same(found(s, ["とうふ"]), ["肉豆腐", "冷奴", "（名前なし）"], "欄1「とうふ」");
+});
+
+item("R3-9c", FILTER, "直しても、絞り込んだ一覧での位置は変わらない（よみを変えない限り）", () => {
+  const { s, ids } = fiveRecipes();
+  s.updateRecipe(ids.冷奴, { title: "冷奴", yomi: "ひややっこ", body: "しょうがをのせる", ingredients: ["とうふ"] });
+  same(found(s, ["とうふ", "きぬどうふ"]), ["肉豆腐", "冷奴", "麻婆豆腐"], "冷奴を直した後");
+});
+
+item("R3-10", FILTER, "食材を付けていないレシピ（古いレシピを含む）は、絞り込むと出ない", () => {
+  const { s } = fiveRecipes();
+  s.addRecipe({ title: "白ごはん", body: "米を炊く", ingredients: [] });
+  const all = ["とうふ", "きぬどうふ", "ぶたこま", "だいこん"];
+  for (const r of [found(s, all), found(s, [], all), found(s, ["とうふ"])]) {
+    expect(!r.includes("古いレシピ"), `古いレシピが出た：${r.join("・")}`);
+    expect(!r.includes("白ごはん"), `食材のない白ごはんが出た：${r.join("・")}`);
+  }
+});
+
+item("R3-11", FILTER, "絞り込んでも、保存されたデータは変わらない（古いレシピも書き換わらない）", () => {
+  const { backend, s } = fiveRecipes();
+  const before = [backend.getItem(RECIPES_KEY), backend.getItem(INGREDIENTS_KEY)];
+  found(s, ["とうふ"]);
+  found(s, ["とうふ", "きぬどうふ"], ["ぶたこま"]);
+  found(s, [], []);
+  same([backend.getItem(RECIPES_KEY), backend.getItem(INGREDIENTS_KEY)], before, "絞り込む前と後の保存されたデータ");
+});
+
+// ---------- 料理名のよみ（R1・R10） ----------
+const YOMI = "料理名のよみ（R1・R10）";
+
+item("Y-1", YOMI, "よみを付けて登録でき、読むと同じよみが返る", () => {
+  const { s } = fresh();
+  const r = s.addRecipe({ title: "冷奴", yomi: "ひややっこ", body: "", ingredients: [] });
+  same(r.ok, true, "登録した結果");
+  same(s.getRecipe(r.id).yomi, "ひややっこ", "読んだよみ");
+});
+
+item("Y-2", YOMI, "直すときによみを直せる", () => {
+  const { s } = fresh();
+  const { id } = s.addRecipe({ title: "冷奴", yomi: "ひややっこ", body: "", ingredients: [] });
+  same(s.updateRecipe(id, { title: "冷奴", yomi: "ひやっこ", body: "", ingredients: [] }).ok, true, "直した結果");
+  same(s.getRecipe(id).yomi, "ひやっこ", "読んだよみ");
+});
+
+item("Y-3", YOMI, "よみは空でも保存できる", () => {
+  const { s } = fresh();
+  const r = s.addRecipe({ title: "カレー", yomi: "", body: "", ingredients: [] });
+  same(r.ok, true, "よみなしで登録した結果");
+  same(s.getRecipe(r.id).yomi, "", "読んだよみ");
+});
+
+item("Y-4", YOMI, "よみは前後の空白を取る。空白だけなら空として保存する", () => {
+  const { backend, s } = fresh();
+  s.addRecipe({ title: "冷奴", yomi: " ひややっこ　", body: "", ingredients: [] });
+  s.addRecipe({ title: "カレー", yomi: "　 ", body: "", ingredients: [] });
+  same(raw(backend).map((r) => r.yomi), ["ひややっこ", ""], "保存されたデータのよみ");
+});
+
+item("Y-5", YOMI, "よみにひらがなと「ー」以外が入っていたら保存せず、理由の文を返す", () => {
+  const { backend, s } = fresh();
+  for (const yomi of ["ヒヤヤッコ", "冷やっこ", "ひや やっこ"]) {
+    const r = s.addRecipe({ title: "冷奴", yomi, body: "", ingredients: [] });
+    same(r.ok, false, `よみ「${yomi}」で登録した結果`);
+    same(r.reason, "よみは、ひらがなと「ー」だけで入れてください", `よみ「${yomi}」の理由の文`);
+  }
+  same(raw(backend).length, 0, "保存されたレシピの数");
+  // 直すときも同じ。保存されたレシピは元のまま
+  const { id } = s.addRecipe({ title: "冷奴", yomi: "ひややっこ", body: "", ingredients: [] });
+  const before = backend.getItem(RECIPES_KEY);
+  same(s.updateRecipe(id, { title: "冷奴", yomi: "ヒヤヤッコ", body: "", ingredients: [] }).ok, false, "カタカナのよみに直した結果");
+  same(backend.getItem(RECIPES_KEY), before, "保存されたデータ");
+});
+
+item("Y-6", YOMI, "よみだけが入っていて、ほかが全部空でも保存する", () => {
+  const { s } = fresh();
+  const r = s.addRecipe({ title: "", yomi: "ひややっこ", body: "", ingredients: [] });
+  same(r.ok, true, "よみだけで登録した結果");
+  same(s.getRecipe(r.id).yomi, "ひややっこ", "読んだよみ");
+});
+
+item("Y-7", YOMI, "よみの欄がない古いレシピは、よみが空として読め、データは書き換わらない", () => {
+  const { backend, s } = fresh();
+  backend.setItem(RECIPES_KEY, JSON.stringify([OLD_RECIPE]));
+  const before = backend.getItem(RECIPES_KEY);
+  same(s.getRecipe("old1").yomi, "", "1件を読んだときのよみ");
+  same(s.listRecipes()[0].yomi, "", "一覧で読んだときのよみ");
+  same(backend.getItem(RECIPES_KEY), before, "読む前と後の保存されたデータ");
+});
+
+// ---------- 条件を住所（URL）に書く ----------
+const QUERY = "条件を住所（URL）に書く";
+
+item("Q-1", QUERY, "条件を住所に書き、その住所から読み戻すと、同じ条件になる", () => {
+  const cond = [["とうふ", "きぬどうふ"], ["ぶたこま"]];
+  const hash = Query.toHash(cond);
+  same(Query.fromHash(hash), cond, `住所 ${hash} から読み戻した条件`);
+  // 住所の中の日本語は、ブラウザによって「%E3%81…」の形に置き換わって返ってくる。
+  // どちらの形で返ってきても読み戻せること
+  same(Query.fromHash(decodeURIComponent(hash)), cond, "日本語のままの住所から読み戻した条件");
+});
+
+item("Q-2", QUERY, "両方の欄が空なら、住所は条件なしの一覧（#/）になる", () => {
+  same(Query.toHash([[], []]), "#/", "両方空の住所");
+  same(Query.fromHash("#/"), [[], []], "#/ から読み戻した条件");
+  same(Query.fromHash(""), [[], []], "住所に # がないとき");
+});
+
+item("Q-3", QUERY, "片方の欄だけでも、書いて読み戻せる", () => {
+  same(Query.fromHash(Query.toHash([[], ["だいこん"]])), [[], ["だいこん"]], "欄2「だいこん」だけ");
+  same(Query.fromHash(Query.toHash([["だいこん"], []])), [["だいこん"], []], "欄1「だいこん」だけ");
+});
+
+item("Q-4", QUERY, "読めない形の住所は、絞り込みなし（両方空）として扱う", () => {
+  for (const hash of ["#/?1=%E3%81", "#/?1", "#/?3=とうふ", "#/?あいう", "#/?1=とうふ&1=なす", "#/?&&"]) {
+    same(Query.fromHash(hash), [[], []], `住所 ${hash}`);
+  }
+});
+
 // ---------- 全部を流す ----------
 // realBackend を渡すと、T-1（本物の保存場所が変わっていないか）も確かめる。
 // 渡さなければ（ブラウザの外で流すとき）T-1 は「確かめられない」とする

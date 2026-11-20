@@ -2,6 +2,7 @@
 //
 // 画面は4つ。URL の # 以降で切り替える。
 //   #/            一覧
+//   #/?1=…&2=…    食材で絞り込んだ一覧（条件の書き方は query.js。SPEC 第6節第7段階）
 //   #/new         登録
 //   #/recipe/<id> 1件を読む（ここから「直す」「消す」）
 //   #/edit/<id>   直す（登録と同じ画面に、いまの中身を入れて開く。SPEC 第6節第6段階）
@@ -22,26 +23,111 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// 一覧。上に絞り込みの欄を2つ置く（R3。SPEC 第6節第7段階「画面の使い方」）
+//   ・同じ欄の中は「どれか」、欄1と欄2は「両方」。決まりは storage.js（テストで確かめている）
+//   ・欄を変えるたびに、その場で一覧と件数を出し直す
+//   ・条件は住所の # の後ろに書く。住所は「書き換える」（積み重ねない）ので、
+//     欄を何回変えても、スワイプ1回で前の画面に戻れる
 function showList() {
-  const recipes = Storage.listRecipes();
-  const list = el("ul", { class: "list" });
-  for (const r of recipes) {
-    // 名前が空なら「（名前なし）」と出す（SPEC 第6節第6段階）
-    list.append(el("li", {}, el("a", { href: `#/recipe/${r.id}` }, Storage.titleOf(r))));
+  const fields = Query.fromHash(location.hash || "#/");
+  const results = el("div");
+
+  function changed() {
+    // 住所を書き換える。hashchange は起きないので、画面全体は作り直さない（打っている欄はそのまま）
+    history.replaceState(null, "", Query.toHash(fields));
+    renderResults();
   }
+
+  function renderResults() {
+    const filtering = fields.some((names) => names.length > 0);
+    const recipes = Storage.filterRecipes(fields);
+    const list = el("ul", { class: "list" });
+    for (const r of recipes) {
+      // 名前が空なら「（名前なし）」と出す（SPEC 第6節第6段階）
+      list.append(el("li", {}, el("a", { href: `#/recipe/${r.id}` }, Storage.titleOf(r))));
+    }
+    if (!filtering) {
+      results.replaceChildren(recipes.length ? list : el("p", { class: "empty" }, "まだレシピがありません"));
+    } else if (recipes.length) {
+      results.replaceChildren(el("p", { class: "count" }, `${recipes.length} 件（よみの順）`), list);
+    } else {
+      results.replaceChildren(el("p", { class: "count" }, "当てはまるレシピがありません"));
+    }
+  }
+
+  renderResults();
   main.replaceChildren(
     el("a", { href: "#/new", class: "button" }, "＋ レシピを登録"),
-    recipes.length ? list : el("p", { class: "empty" }, "まだレシピがありません")
+    el("div", { class: "filter" },
+      el("p", { class: "filter-note" }, "食材で絞り込む（同じ欄の中は「どれか」、欄1と欄2は「両方」）"),
+      filterField(1, fields[0], changed),
+      filterField(2, fields[1], changed)),
+    results
   );
+}
+
+// 絞り込みの欄を1つ作る。食材の入れ方は登録画面と同じ（打つと、打った文字で始まる食材が候補に出る）。
+// ただし、ここでは食材を足す・消すことはできない（候補に「足す」「消す」を出さない）。
+// 探しているだけで食材の一覧が変わらないようにするため（SPEC 第6節第7段階）
+function filterField(number, names, onChange) {
+  const id = `filter${number}`;
+  const chosenArea = el("div", { class: "chosen" });
+  const query = el("input", { type: "text", id, placeholder: "ひらがなで（例：と）" });
+  const candidates = el("ul", { class: "candidates" });
+
+  function renderChosen() {
+    chosenArea.replaceChildren(...names.map((name) => el("span", { class: "chip" }, name,
+      el("button", { class: "small", onclick: () => {
+        names.splice(names.indexOf(name), 1);
+        renderChosen();
+        renderCandidates();
+        onChange();
+      } }, "外す"))));
+  }
+
+  function choose(name) {
+    names.push(name);
+    query.value = ""; // 次の食材をすぐ打てるように、欄を空にする（候補も消える）
+    renderChosen();
+    renderCandidates();
+    onChange();
+  }
+
+  function renderCandidates() {
+    const text = query.value.trim();
+    const found = Storage.searchIngredients(text);
+    const rows = found.map((name) => el("li", {}, names.includes(name)
+      ? el("span", { class: "picked" }, `${name}（入れています）`)
+      : el("button", { class: "pick", onclick: () => choose(name) }, name)));
+    if (text && !found.length) {
+      rows.push(el("li", {}, el("span", { class: "picked" }, `「${text}」で始まる食材はありません`)));
+    }
+    candidates.replaceChildren(...rows);
+  }
+
+  query.addEventListener("input", renderCandidates);
+  query.addEventListener("keydown", (e) => {
+    // 日本語の変換を確定するための Enter では何もしない
+    if (e.key !== "Enter" || e.isComposing) return;
+    const text = query.value.trim();
+    if (Storage.searchIngredients(text).includes(text) && !names.includes(text)) choose(text);
+  });
+
+  renderChosen();
+  return el("div", { class: "filter-field" },
+    el("label", { for: id }, `欄${number}`), chosenArea, query, candidates);
 }
 
 // 登録（recipe なし）と直す（recipe あり）は同じ画面を使う。
 // 直すときは、保存を押すまで保存されたレシピは元のまま（SPEC 第6節第6段階）
 function showEditor(recipe = null) {
   const title = el("input", { type: "text", id: "title", placeholder: "レシピの名前（あとで入れてもよい）" });
+  // 料理名のよみ（SPEC 第6節第7段階）。絞り込んだ一覧をあいうえお順に並べるときにだけ使う
+  const yomi = el("input", { type: "text", id: "yomi", placeholder: "ひらがなで（漢字の名前のときだけ。例：ひややっこ）" });
   const body = el("textarea", { id: "body", rows: "12", placeholder: "材料と手順を貼り付け" });
   if (recipe) {
     title.value = recipe.title;
+    yomi.value = recipe.yomi;
     body.value = recipe.body;
   }
 
@@ -147,7 +233,7 @@ function showEditor(recipe = null) {
   const saveMessage = el("p", { class: "message" });
   const save = el("button", {
     onclick: () => {
-      const input = { title: title.value, body: body.value, ingredients: [...selected] };
+      const input = { title: title.value, yomi: yomi.value, body: body.value, ingredients: [...selected] };
       const result = recipe ? Storage.updateRecipe(recipe.id, input) : Storage.addRecipe(input);
       if (!result.ok) {
         saveMessage.textContent = result.reason;
@@ -160,6 +246,7 @@ function showEditor(recipe = null) {
     // 直すときの「もどる」は保存せずに読む画面へ戻る
     recipe ? el("a", { href: `#/recipe/${recipe.id}` }, "← もどる（保存しない）") : el("a", { href: "#/" }, "← 一覧へ"),
     el("label", { for: "title" }, "名前"), title,
+    el("label", { for: "yomi" }, "よみ"), yomi,
     el("label", { for: "ingredient" }, "食材"), chosenArea,
     query, candidates,
     message,
@@ -187,9 +274,12 @@ function showRecipe(id) {
       el("a", { href: "#/" }, "← 一覧へ"),
       el("a", { href: `#/edit/${r.id}`, class: "button small-button" }, "直す")),
     el("h2", {}, Storage.titleOf(r)),
-    // 付けた食材（古いレシピは「食材なし」として扱う）
+    // 付けた食材（古いレシピは「食材なし」として扱う）。
+    // 押すと、その食材だけで絞り込んだ一覧へ行く（欄1にその食材、欄2は空。SPEC 第6節第7段階）。
+    // ふつうのリンクなので住所が積み重なり、スワイプで戻るとこのレシピに戻る
     r.ingredients.length
-      ? el("p", { class: "tags" }, r.ingredients.join("・"))
+      ? el("p", { class: "tags" }, ...r.ingredients.map((name) =>
+          el("a", { href: Query.toHash([[name], []]), class: "tag" }, name)))
       : el("p", { class: "empty" }, "食材なし"),
     el("div", { class: "body" }, r.body),
     el("hr", { class: "separator" }),
